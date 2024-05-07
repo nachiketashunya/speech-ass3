@@ -1,24 +1,11 @@
-import os
 import torch
-import librosa
-import numpy as np
 from sklearn.metrics import roc_auc_score, roc_curve
-import torch.nn as nn
 from model import Model
 import numpy as np
-from tqdm import tqdm
 from makedataset import AudioDataset
 from torch.utils.data import DataLoader
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')                  
-print('Device: {}'.format(device))
-
-
-model = Model(None, device=device)
-
-checkpoint = torch.load("best.pth", map_location=device)
-model.load_state_dict(checkpoint)
-model.eval()
 
 # Directories
 fake_dir = "Dataset_Speech_Assignment/Dataset_Speech_Assignment/Fake"
@@ -32,32 +19,49 @@ real_dataset = AudioDataset(dir=real_dir)
 fake_loader = DataLoader(fake_dataset, batch_size=64, shuffle=True)
 real_loader = DataLoader(real_dataset, batch_size=64, shuffle=True)
 
-predictions = []
-ground_truth = []
+class AudioClassifierEvaluator:
+    def __init__(self, model_filename, real_loader, fake_loader, device):
+        self.model = self.load_model(model_filename, device)
+        self.real_loader = real_loader
+        self.fake_loader = fake_loader
+        self.device = device
 
-# Loop through dataloaders for real and fake data
-for loader, label in [(real_loader, 0), (fake_loader, 1)]:
-    for processed_audio in loader:
-        processed_audio_tensor = processed_audio.float()
+    def load_model(self, model_filename, device):
+        model = Model(None, device=device)  # Assuming Model is defined somewhere
+        checkpoint = torch.load(model_filename, map_location=device)
+        model.load_state_dict(checkpoint)
+        model.eval()
+        return model
 
-        with torch.no_grad():
-            output = model(processed_audio_tensor)
-            prediction = output[:, 1].item() 
+    def evaluate(self):
+        predictions = []
+        ground_truth = []
 
-        predictions.append(prediction)
-        ground_truth.append(label)
+        for loader, label in [(self.real_loader, 0), (self.fake_loader, 1)]:
+            for processed_audio in loader:
+                processed_audio_tensor = processed_audio.float().to(self.device)
 
-# Calculate AUC
-auc_score = roc_auc_score(ground_truth, predictions)
+                with torch.no_grad():
+                    output = self.model(processed_audio_tensor)
+                    prediction = output[:, 1].item()
 
-# Calculate ROC curve
-fpr, tpr, _ = roc_curve(ground_truth, predictions)
+                predictions.append(prediction)
+                ground_truth.append(label)
 
-eer = 1.0
-for i in range(len(fpr)):
-    if fpr[i] >= 1 - tpr[i]:
-        eer = fpr[i]
-        break
+        auc_score = roc_auc_score(ground_truth, predictions)
+        fpr, tpr, _ = roc_curve(ground_truth, predictions)
+        
+        eer = 1.0
+        for i in range(len(fpr)):
+            if fpr[i] >= 1 - tpr[i]:
+                eer = fpr[i]
+                break
 
-print("AUC:", auc_score)
-print("EER:", eer)
+        print("AUC:", auc_score)
+        print("EER:", eer)
+
+        return auc_score, eer
+    
+
+evaluator = AudioClassifierEvaluator("best.pth", real_loader, fake_loader, device)
+auc_score, eer = evaluator.evaluate()
